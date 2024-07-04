@@ -65,12 +65,8 @@ Setvariable() {
       haltMsg="Please Contact IT for Further assistance."
   fi
 
-  if [ ! -z "$3" ]; then
+  if [ -n "$3" ]; then
       brandIcon="$3"
-  elif [ -f "$selfServiceBrandIcon" ]; then
-      brandIcon="$selfServiceBrandIcon"
-  elif [ -f "$jamfBrandIcon" ]; then
-      brandIcon="$jamfBrandIcon"
   else
       brandIcon="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/FileVaultIcon.icns"
   fi
