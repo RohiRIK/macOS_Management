@@ -1,0 +1,222 @@
+#!/bin/bash
+################################################################################################################
+## Script Name: Rotate_FileVault_macOS.sh
+## Author: Rohi Rikman
+## Date: 2022-11-15
+## Description:
+##       The Rotate_FileVault_macOS.sh script is designed for use with Intune in managed devices. 
+##       It aims to resolve issues with uploading recovery keys for devices that were already encrypted. 
+##       This script verifies if the currently logged-in user is a FileVault 2-enabled user and checks if the encryption process is complete. 
+##       It prompts the user for their login password and attempts to rotate the FileVault recovery key up to three times. 
+##       If the key is successfully rotated, the script logs code 0 and exits.
+##       The script checks if the last line of the log file contains "code 0" and exits if it does, so it will not be executed again. 
+##       This script is adapted from the original script found at jamf/FileVault2_Scripts and has been modified for use with Intune.
+
+################################################################################################################
+## Log path: /Library/Logs/Microsoft/IntuneScripts/filevault_rotation/filevault_rotation.log    
+
+################################# variables to cahange #################################
+orgName="rohi.online"
+haltMsg="If you need more assistance, please contact IT."
+brandIcon="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/FileVaultIcon.icns"
+logDir="/Library/Logs/Microsoft/IntuneScripts/filevault_rotation"
+logFile="$logDir/filevault_rotation.log"
+maxTry=3 
+
+################################# Predifind variables, dont change those #################################
+
+Time_of_Day="$(date +'%H:%M:%S')"
+
+# Get the logged in user's name
+userName=$(/usr/bin/stat -f%Su /dev/console)
+
+# Grab the UUID of the User
+userNameUUID=$(dscl . -read /Users/$userName/ GeneratedUID | awk '{print $2}')
+
+# Get the OS build
+BUILD=$(/usr/bin/sw_vers -buildVersion | awk {'print substr ($0,0,2)'})
+
+##### functions 
+
+log() {
+        if [ ! -d "$logDir" ]; then
+        ## Creating Metadirectory
+        echo "${Time_of_Day} | [INFO] Creating [$logDir] to store logs"
+        mkdir -p "$logDir"
+
+    fi
+    echo "${Time_of_Day} | [INFO] $1" >> "$logFile"
+}
+
+
+Setvariable() {
+  local orgName=""
+  local haltMsg=""
+  local brandIcon=""
+
+  log "${Time_of_Day} | [INFO] Setting Variables"
+  if [ ! -z "$1" ]; then
+    orgName="$1 -"
+  fi
+
+  if [ ! -z "$2" ]; then
+      haltMsg="$2"
+  else
+      haltMsg="Please Contact IT for Further assistance."
+  fi
+
+  if [ ! -z "$3" ]; then
+      brandIcon="$3"
+  elif [ -f "$selfServiceBrandIcon" ]; then
+      brandIcon="$selfServiceBrandIcon"
+  elif [ -f "$jamfBrandIcon" ]; then
+      brandIcon="$jamfBrandIcon"
+  else
+      brandIcon="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/FileVaultIcon.icns"
+  fi
+}
+
+passwordPrompt() {
+    echo "Prompting ${userName} for their login password."
+    log "${Time_of_Day} | [INFO] Prompting ${userName} for their login password."
+    userPass=$(/usr/bin/osascript -e "
+    on run
+        display dialog \"To generate a new FileVault key\" & return & \"Enter login password for '$userName'\" default answer \"\" with title \"$orgName FileVault Key Reset\" buttons {\"Cancel\", \"Ok\"} default button 2 with icon POSIX file \"$brandIcon\" with text and hidden answer
+        set userPass to text returned of the result
+        return userPass
+    end run")
+    
+    if [ "$?" == "1" ]; then
+        echo "User Canceled"
+        log "${Time_of_Day} | [EREOR] User Canceled"
+        exit 0
+    fi
+
+    try=$((try + 1))
+
+    if [[ $BUILD -ge 17 ]]; then
+        log "${Time_of_Day} | [INFO] Rotating FileVault key"
+        result=$(expect -c "
+        log_user 1
+        spawn fdesetup changerecovery -personal
+        expect \"Enter the user name:\"
+        send \"${userName}\r\"
+        expect \"Enter a password for ${userName}, or the recovery key:\"
+        send \"${userPass}\r\"
+        expect eof")
+    else
+        echo "OS version not supported"
+        log "${Time_of_Day} | [ERROR] OS version not supported, Pleas Update Immediately"
+        exit 5
+    fi
+}
+
+successAlert() {
+    /usr/bin/osascript -e "
+    on run
+        display dialog \"\" & return & \"Your FileVault Key was successfully Changed\" with title \"$orgName FileVault Key Reset\" buttons {\"OK\"} default button 1 with icon POSIX file \"$brandIcon\" giving up after 30
+    end run"
+    log "${Time_of_Day} | [INFO] FileVault Key was successfully Changed"
+}
+
+errorAlert() {
+    result=$( /usr/bin/osascript -e "
+    on run
+        display dialog \"An error occurred while attempting to unlock or authenticate to FileVault for the user: \" & \"$userName\" & return & \"Please try again or contact your IT if the problem persists. \"  buttons {\"Cancel\", \"Try Again\"} default button 2 with title \"$orgName FileVault Key Reset\" with icon POSIX file \"$brandIcon\"
+    end run"
+    )
+    exit_status=$?
+    log "${Time_of_Day} | [ERROR] FileVault Key not Changed"
+    
+    if [ "$exit_status" == "1" ]; then
+        echo "User Canceled"
+        log "${Time_of_Day} | [ERROR] User Canceled"
+        exit 0
+    else
+        #try=$((try + 1))
+        echo $try
+    fi
+}
+
+
+haltAlert() {
+    /usr/bin/osascript -e "
+    on run
+        display dialog \"FileVault Key changing failed\" & return & \"$haltMsg\" buttons {\"Close\"} default button 1 with title \"$orgName FileVault Key Reset\" with icon POSIX file \"$brandIcon\"
+    end run"
+    log "${Time_of_Day} | [ERROR] FileVault Key not changed"
+}
+
+# Function to check if the last line of a log file contains "code 0"
+checkifScriptRan() {
+    local log_file="$1"
+    local log_dir="$2"
+
+    if [ ! -d "$log_dir" ]; then
+        echo "${Time_of_Day} | [INFO] fist time running, Creating [$log_dir] to store logs"
+        log  "${Time_of_Day} | [INFO] fist time running, Creating [$log_dir] to store logs"
+    fi
+
+    LastLine=$(tail -n 1 "$log_file")
+
+    # Check if last line contains "code 0"
+    if echo "$LastLine" | grep "code 0"; then
+        echo "Last line of '$log_file' contains 'code 0' exiting from the script"
+        exit 0
+    else
+        echo "Last line of '$log_file' does not contain 'code 0' continuing with the script" 
+    fi
+}
+
+
+### Main Logic 
+
+checkifScriptRan "$logFile" "$logDir"
+
+log "${Time_of_Day} | [INFO] FileVault key reset script started."
+
+Setvariable "$orgName" "$haltMsg" "$brandIcon"
+
+# This first user check sees if the logged in account is already authorized with FileVault 2
+userCheck=$(fdesetup list | awk -v usrN="$userNameUUID" -F, 'match($0, usrN) {print $1}')
+if [ "${userCheck}" != "${userName}" ]; then
+    echo "This ${userName} is not a FileVault 2 enabled user."
+    log "${Time_of_Day} | [ERROR] ${userName} is not a FileVault 2, Pleas FileVault enabled user."
+    exit 3
+fi
+
+# Check to see if the encryption process is complete
+log "${Time_of_Day} | [INFO] Checking encryption status"
+encryptCheck=$(fdesetup status)
+statusCheck=$(echo "${encryptCheck}" | grep "FileVault is On.")
+expectedStatus="FileVault is On."
+
+if [ "${statusCheck}" != "${expectedStatus}" ]; then
+    echo "The encryption process has not completed."
+    log "${Time_of_Day} | [ERROR] The encryption process has not completed"
+    echo "${encryptCheck}"
+    exit 4
+fi
+
+
+while true; do
+    passwordPrompt
+    if [[ $result = *"Error"* ]]; then
+        echo "Error Changing Key"
+        if [ $try -ge $maxTry ]; then
+            haltAlert
+            echo "Quitting.. Too Many failures"
+            log "${Time_of_Day} | [ERROR] Quitting.. Too Many failures"
+            exit 0
+        else
+            echo $result
+            errorAlert
+        fi
+    else
+        echo "Successfully Changed FV2 Key"
+        successAlert
+        log "${Time_of_Day} | [INFO] Rotation script have successfully completed, Logging code 0 for disble the script"
+        log "code 0"
+        exit 0
+    fi
+done
